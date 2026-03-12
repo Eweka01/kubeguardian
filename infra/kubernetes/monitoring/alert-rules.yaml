@@ -1,0 +1,54 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubeguardian-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: kubeguardian.incidents
+    interval: 30s
+    rules:
+
+    # Incident 1 — CrashLoopBackOff
+    - alert: CrashLoopBackOff
+      expr: |
+        increase(kube_pod_container_status_restarts_total{namespace="app"}[5m]) > 3
+      for: 1m
+      labels:
+        severity: critical
+        incident_type: crash_loop
+      annotations:
+        summary: "CrashLoopBackOff detected"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted more than 3 times in 5 minutes."
+        service: "{{ $labels.pod }}"
+        runbook: "restart_deployment,rollback_image"
+
+    # Incident 2 — Failing readiness probe
+    - alert: PodNotReady
+      expr: |
+        kube_pod_status_ready{namespace="app", condition="true"} == 0
+      for: 2m
+      labels:
+        severity: warning
+        incident_type: readiness_failure
+      annotations:
+        summary: "Pod failing readiness probe"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been not ready for 2 minutes."
+        service: "{{ $labels.pod }}"
+        runbook: "restart_deployment,scale_replicas"
+
+    # Incident 3 — High error rate
+    - alert: HighErrorRate
+      expr: |
+        rate(promhttp_metric_handler_requests_total{code=~"5.."}[3m]) > 0.1
+      for: 3m
+      labels:
+        severity: critical
+        incident_type: high_error_rate
+      annotations:
+        summary: "High 5xx error rate"
+        description: "Service {{ $labels.job }} is returning more than 10% 5xx errors for 3 minutes."
+        service: "{{ $labels.job }}"
+        runbook: "rollback_image,scale_replicas"
