@@ -1,0 +1,4 @@
+adminPassword: kubeguardian123
+
+persistence:
+  enabled: false
