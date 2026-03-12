@@ -36,8 +36,10 @@ spec:
           value: "5678"
         - name: N8N_PROTOCOL
           value: "http"
+        - name: N8N_SECURE_COOKIE
+          value: "false"
         - name: WEBHOOK_URL
-          value: "REPLACE_WITH_LB_URL"
+          value: "http://a11cf5cd57696406db7e847bbc3f9fc8-509739064.us-east-1.elb.amazonaws.com:5678"
         volumeMounts:
         - name: n8n-data
           mountPath: /home/node/.n8n
