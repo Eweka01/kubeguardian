@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-prometheus-kube-prometheus-alertmanager
+  namespace: monitoring
+stringData:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: n8n-webhook
+    receivers:
+    - name: n8n-webhook
+      webhook_configs:
+      - url: 'http://n8n.n8n.svc.cluster.local:5678/webhook/kubeguardian-alert'
+        send_resolved: true

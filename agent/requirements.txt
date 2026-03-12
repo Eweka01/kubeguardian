@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+kubernetes
+pyyaml
+python-dotenv
+requests
+pydantic
