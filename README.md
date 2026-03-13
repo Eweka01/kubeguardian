@@ -11,7 +11,8 @@ AI-assisted Kubernetes incident triage and automated remediation platform. Detec
 | Phase 3 | Alert rules + incident simulator | Complete |
 | Phase 4 | FastAPI agent — evidence collector + executor | Complete |
 | Phase 5 | n8n automation + Telegram ChatOps | Complete |
-| Phase 6 | MCP server | Upcoming |
+| Phase 6 | MCP server — Claude Desktop integration | Complete |
+| Phase 7 | Argo CD GitOps — automated sync from GitHub | Complete |
 
 ---
 
@@ -288,6 +289,36 @@ http://n8n.n8n.svc.cluster.local:5678/webhook/kubeguardian-alert
 
 ---
 
+## Phase 7 — Argo CD GitOps
+
+### What was built
+- Argo CD installed on EKS in the `argocd` namespace
+- `argocd-server` exposed via AWS Classic Load Balancer
+- Application resource syncing `infra/kubernetes/` from GitHub → cluster
+- Auto-sync with self-heal enabled: any drift is corrected automatically
+
+### Argo CD
+| Detail | Value |
+|--------|-------|
+| URL | `http://a32675a867dd34b39bf5b5f0a8e3bdea-1749406107.us-east-1.elb.amazonaws.com` |
+| Login | `admin` / `WY3RGQWkcTdgcCIu` |
+| Namespace | `argocd` |
+| Synced app | `kubeguardian` → `github.com/Eweka01/kubeguardian` (path: `infra/kubernetes`) |
+
+### How GitOps works now
+```
+git push → GitHub → Argo CD polls every 3 min
+                          ↓
+              Detects drift from desired state
+                          ↓
+              kubectl apply to reconcile cluster
+```
+
+### Key files
+- [infra/kubernetes/argocd/application.yaml](infra/kubernetes/argocd/application.yaml) — Argo CD Application resource
+
+---
+
 ## Project Structure
 
 ```
@@ -307,6 +338,8 @@ kubeguardian/
 │   ├── kubernetes/
 │   │   ├── agent/
 │   │   │   └── deployment.yaml # ServiceAccount + RBAC + Deployment + Service
+│   │   ├── argocd/
+│   │   │   └── application.yaml # Argo CD Application — GitOps sync
 │   │   ├── monitoring/
 │   │   │   ├── alert-rules.yaml        # 3 PrometheusRule alerts
 │   │   │   └── alertmanager-config.yaml # Webhook → n8n
@@ -323,6 +356,8 @@ kubeguardian/
 │       ├── variables.tf
 │       ├── outputs.tf
 │       └── versions.tf
+├── mcp-server/
+│   └── index.js                # MCP server — 14 tools for Claude Desktop
 ├── scripts/
 │   └── simulate.sh             # Incident simulator (crashloop/readiness/errorrate/restore)
 └── docs/
@@ -346,6 +381,8 @@ kubeguardian/
 | Agent API | FastAPI + Python Kubernetes SDK |
 | AI diagnosis | Claude (Anthropic) or GPT-4o (OpenAI) |
 | ChatOps | Telegram Bot API |
+| MCP integration | Model Context Protocol server (Claude Desktop) |
+| GitOps | Argo CD |
 | Package management | Helm v4 |
 
 ---
