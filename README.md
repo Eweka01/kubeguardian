@@ -46,47 +46,7 @@ The entire stack runs on Kubernetes and is managed via GitOps with Argo CD.
 
 ## Architecture
 
-```
-                        ┌──────────────────────────────────────────────┐
-                        │               AWS EKS Cluster                │
-                        │                                              │
-  Prometheus ──scrapes──▶  app namespace                              │
-  Alertmanager ─fires──▶    ├── api-gateway      (2 pods)            │
-  Loki ──────collects──▶    ├── payment-service  (2 pods)            │
-                        │    └── user-service    (2 pods)             │
-                        │                                              │
-                        │  ops namespace                               │
-                        │    ├── kubeguardian-agent  (FastAPI)         │
-                        │    └── postgres            (incident DB)     │
-                        │                                              │
-                        │  n8n namespace                               │
-                        │    └── n8n  (internet-facing ELB)           │
-                        │                                              │
-                        │  argocd namespace                            │
-                        │    └── argocd-server  (GitOps)              │
-                        └──────────────────────────────────────────────┘
-                                          │
-                               Alertmanager webhook
-                                          │
-                                        n8n
-                                          │
-                            ┌─────────────────────────┐
-                            │  1. Fetch evidence       │
-                            │     (agent /evidence)    │
-                            │  2. AI diagnosis         │
-                            │     (GPT-4o / Claude)    │
-                            │  3. Telegram message     │
-                            │     with steps + fix     │
-                            │  4. Wait for /approve    │
-                            │  5. Execute fix          │
-                            │     (agent /execute)     │
-                            │  6. Confirm on Telegram  │
-                            └─────────────────────────┘
-                                          │
-                            Claude Desktop (MCP Server)
-                            ← 15 tools — natural language →
-                            ← query cluster + incident DB →
-```
+<img width="2527" height="1473" alt="Image" src="https://github.com/user-attachments/assets/d2bf597c-e9e4-41d0-bf60-d631326c5710" />
 
 ---
 
