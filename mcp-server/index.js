@@ -14,6 +14,8 @@ const { execSync } = require("child_process");
 const axios = require("axios");
 
 const AGENT_URL = process.env.AGENT_URL || "http://localhost:8000";
+const N8N_URL = process.env.N8N_URL || "http://a11cf5cd57696406db7e847bbc3f9fc8-509739064.us-east-1.elb.amazonaws.com:5678";
+const N8N_API_KEY = process.env.N8N_API_KEY || "";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,6 +131,51 @@ const TOOLS = [
       type: "object",
       properties: {}
     }
+  },
+  {
+    name: "trigger_incident",
+    description: "Simulate a real incident on a service to test the full KubeGuardian pipeline",
+    inputSchema: {
+      type: "object",
+      required: ["incident_type", "service"],
+      properties: {
+        incident_type: { type: "string", description: "crashloop | readiness | errorrate" },
+        service: { type: "string", description: "api-gateway | payment-service | user-service" }
+      }
+    }
+  },
+  {
+    name: "restore_service",
+    description: "Restore a service to healthy state after a simulated incident",
+    inputSchema: {
+      type: "object",
+      required: ["service"],
+      properties: {
+        service: { type: "string", description: "Service name to restore" }
+      }
+    }
+  },
+  {
+    name: "trigger_n8n_alert",
+    description: "Manually trigger the KubeGuardian n8n alert pipeline for a service",
+    inputSchema: {
+      type: "object",
+      required: ["service"],
+      properties: {
+        service: { type: "string", description: "Service name (e.g. payment-service)" },
+        alertname: { type: "string", description: "Alert name (default: CrashLoopBackOff)" }
+      }
+    }
+  },
+  {
+    name: "list_n8n_executions",
+    description: "List recent n8n workflow executions and their status",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of executions to return (default: 5)" }
+      }
+    }
   }
 ];
 
@@ -186,6 +233,38 @@ async function handleTool(name, args) {
         namespace: ns,
         replicas: args.replicas
       });
+      return JSON.stringify(res.data, null, 2);
+    }
+
+    case "trigger_incident": {
+      const script = `/Users/osamudiameneweka/kubeguardian/scripts/simulate.sh`;
+      return kubectl(`--version`) && execSync(`bash ${script} ${args.incident_type} ${args.service}`, { encoding: "utf8" });
+    }
+
+    case "restore_service": {
+      const script = `/Users/osamudiameneweka/kubeguardian/scripts/simulate.sh`;
+      return execSync(`bash ${script} restore ${args.service}`, { encoding: "utf8" });
+    }
+
+    case "trigger_n8n_alert": {
+      const alertname = args.alertname || "CrashLoopBackOff";
+      const res = await axios.post(
+        `${N8N_URL}/webhook/kubeguardian-alert`,
+        {
+          receiver: "n8n-webhook",
+          status: "firing",
+          alerts: [{ status: "firing", labels: { alertname, namespace: "app", severity: "critical" } }],
+          groupLabels: { alertname, service: args.service },
+          commonLabels: { namespace: "app", service: args.service }
+        }
+      );
+      return `n8n triggered: ${JSON.stringify(res.data)}`;
+    }
+
+    case "list_n8n_executions": {
+      const limit = args.limit || 5;
+      const headers = N8N_API_KEY ? { "X-N8N-API-KEY": N8N_API_KEY } : {};
+      const res = await axios.get(`${N8N_URL}/api/v1/executions?limit=${limit}`, { headers });
       return JSON.stringify(res.data, null, 2);
     }
 
