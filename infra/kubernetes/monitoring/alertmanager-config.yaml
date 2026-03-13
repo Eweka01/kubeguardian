@@ -16,5 +16,5 @@ stringData:
     receivers:
     - name: n8n-webhook
       webhook_configs:
-      - url: 'http://n8n.n8n.svc.cluster.local:5678/webhook/ABM4Cy4iVpDZb8Ex/webhook/kubeguardian-alert'
+      - url: 'http://n8n.n8n.svc.cluster.local:5678/webhook/kubeguardian-alert'
         send_resolved: true
