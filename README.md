@@ -1,6 +1,6 @@
 # KubeGuardian AI
 
-> AI-assisted Kubernetes incident triage and automated remediation platform. Detects real incidents on EKS, collects evidence, runs AI diagnosis, and executes safe fixes — all triggered from Telegram.
+> AI-assisted Kubernetes incident triage and automated remediation platform. Detects real incidents on EKS, collects evidence, runs AI diagnosis, executes safe fixes, logs every incident to a database, and tracks MTTR — all queryable from Claude Desktop via natural language.
 
 ---
 
@@ -17,9 +17,11 @@
 9. [Phase 5 — n8n Automation + Telegram ChatOps](#phase-5--n8n-automation--telegram-chatops)
 10. [Phase 6 — MCP Server (Claude Desktop)](#phase-6--mcp-server-claude-desktop)
 11. [Phase 7 — Argo CD GitOps](#phase-7--argo-cd-gitops)
-12. [End-to-End Demo](#end-to-end-demo)
-13. [Project Structure](#project-structure)
-14. [Quick Reference](#quick-reference)
+12. [Phase 8 — Incident Database + MTTR Tracking (V2)](#phase-8--incident-database--mttr-tracking-v2)
+13. [Claude Desktop — Example Queries](#claude-desktop--example-queries)
+14. [End-to-End Demo](#end-to-end-demo)
+15. [Project Structure](#project-structure)
+16. [Quick Reference](#quick-reference)
 
 ---
 
@@ -34,6 +36,8 @@ KubeGuardian is a full AI-driven incident response platform built on AWS EKS. Wh
 5. Waits for human approval
 6. Executes the fix (rollback, restart, or scale)
 7. Confirms the remediation on Telegram
+8. Logs the incident to PostgreSQL with MTTR calculated automatically
+9. Exposes 15 MCP tools to Claude Desktop for natural language cluster control and incident history queries
 
 The entire stack runs on Kubernetes and is managed via GitOps with Argo CD.
 
@@ -42,23 +46,24 @@ The entire stack runs on Kubernetes and is managed via GitOps with Argo CD.
 ## Architecture
 
 ```
-                        ┌─────────────────────────────────────────┐
-                        │             AWS EKS Cluster             │
-                        │                                         │
-  Prometheus ──scrapes──▶  app namespace                         │
-  Alertmanager ─fires──▶    ├── api-gateway      (2 pods)        │
-  Loki ──────collects──▶    ├── payment-service  (2 pods)        │
-                        │    └── user-service    (2 pods)         │
-                        │                                         │
-                        │  ops namespace                          │
-                        │    └── kubeguardian-agent  (FastAPI)    │
-                        │                                         │
-                        │  n8n namespace                          │
-                        │    └── n8n  (internet-facing ELB)       │
-                        │                                         │
-                        │  argocd namespace                       │
-                        │    └── argocd-server  (GitOps)          │
-                        └─────────────────────────────────────────┘
+                        ┌──────────────────────────────────────────────┐
+                        │               AWS EKS Cluster                │
+                        │                                              │
+  Prometheus ──scrapes──▶  app namespace                              │
+  Alertmanager ─fires──▶    ├── api-gateway      (2 pods)            │
+  Loki ──────collects──▶    ├── payment-service  (2 pods)            │
+                        │    └── user-service    (2 pods)             │
+                        │                                              │
+                        │  ops namespace                               │
+                        │    ├── kubeguardian-agent  (FastAPI)         │
+                        │    └── postgres            (incident DB)     │
+                        │                                              │
+                        │  n8n namespace                               │
+                        │    └── n8n  (internet-facing ELB)           │
+                        │                                              │
+                        │  argocd namespace                            │
+                        │    └── argocd-server  (GitOps)              │
+                        └──────────────────────────────────────────────┘
                                           │
                                Alertmanager webhook
                                           │
@@ -78,7 +83,8 @@ The entire stack runs on Kubernetes and is managed via GitOps with Argo CD.
                             └─────────────────────────┘
                                           │
                             Claude Desktop (MCP Server)
-                            ← query cluster directly →
+                            ← 15 tools — natural language →
+                            ← query cluster + incident DB →
 ```
 
 ---
@@ -91,14 +97,15 @@ The entire stack runs on Kubernetes and is managed via GitOps with Argo CD.
 | Infrastructure as Code | Terraform (`terraform-aws-modules/eks` v20, `vpc` v5) |
 | Container orchestration | Kubernetes 1.29 |
 | Metrics | Prometheus + kube-state-metrics + node-exporter |
-| Dashboards | Grafana |
+| Dashboards | Grafana (Node Exporter Full, K8s Cluster, K8s Pods) |
 | Logs | Loki + Promtail |
 | Alerting | Alertmanager |
-| Automation | n8n (self-hosted on EKS) |
+| Automation | n8n (self-hosted on EKS, EBS-backed) |
 | Agent API | FastAPI + Python Kubernetes SDK |
+| Incident database | PostgreSQL 15 (EBS-backed, ops namespace) |
 | AI diagnosis | GPT-4o (OpenAI) or Claude (Anthropic) |
 | ChatOps | Telegram Bot API |
-| MCP integration | Model Context Protocol server (Node.js) |
+| MCP integration | Model Context Protocol server (Node.js) — 15 tools |
 | GitOps | Argo CD |
 | Package management | Helm v4 |
 
@@ -165,7 +172,7 @@ cd kubeguardian
 
 ### What this phase builds
 - VPC with public + private subnets across 2 availability zones
-- EKS cluster (Kubernetes 1.29) with a managed node group
+- EKS cluster (Kubernetes 1.29) with a managed node group (2–3 × `t3.medium`)
 - 3 namespaces: `app`, `monitoring`, `ops`
 - 3 sample microservices with health probes
 
@@ -195,7 +202,7 @@ aws eks update-kubeconfig --region us-east-1 --name kubeguardian
 kubectl get nodes
 ```
 
-If you see `Error: server has asked for the client to provide credentials`, your IAM user is not yet mapped to the cluster. Run:
+If you see `Error: server has asked for the client to provide credentials`, your IAM user is not mapped to the cluster. Run:
 
 ```bash
 # Replace <your-iam-arn> with the output of: aws sts get-caller-identity --query Arn --output text
@@ -214,7 +221,7 @@ aws eks associate-access-policy \
 
 ### 1.3 Tag public subnets for Classic ELB
 
-This is required for LoadBalancer services (n8n, Argo CD) to get public IPs:
+Required for LoadBalancer services (n8n, Argo CD) to receive public IPs:
 
 ```bash
 # Get your public subnet IDs
@@ -223,7 +230,7 @@ aws ec2 describe-subnets \
   --query "Subnets[*].SubnetId" \
   --output text
 
-# Tag each public subnet (repeat for both subnet IDs)
+# Tag each public subnet
 aws ec2 create-tags \
   --resources <subnet-id-1> <subnet-id-2> \
   --tags Key=kubernetes.io/role/elb,Value=1
@@ -260,7 +267,7 @@ user-service-xxx                   1/1     Running   0          30s
 | Cluster name | `kubeguardian` |
 | Region | `us-east-1` |
 | Kubernetes version | `1.29` |
-| Nodes | 2 × `t3.medium` (auto-scales 1–3) |
+| Nodes | 2–3 × `t3.medium` (auto-scales 1–3) |
 | VPC CIDR | `10.0.0.0/16` |
 | Private subnets | `10.0.1.0/24`, `10.0.2.0/24` |
 | Public subnets | `10.0.101.0/24`, `10.0.102.0/24` |
@@ -272,7 +279,7 @@ user-service-xxx                   1/1     Running   0          30s
 ### What this phase builds
 - Prometheus — scrapes metrics from all pods and nodes
 - Alertmanager — fires alerts, routes to n8n webhook
-- Grafana — dashboards
+- Grafana — dashboards (Node Exporter Full, Kubernetes Cluster, Kubernetes Pods)
 - Loki + Promtail — log aggregation
 
 ### 2.1 Add Helm repositories
@@ -302,7 +309,7 @@ helm install grafana grafana/grafana \
   -f infra/helm/grafana-values.yaml
 ```
 
-To re-install everything at once, use the helper script:
+To re-install everything at once:
 
 ```bash
 bash infra/helm/install.sh
@@ -335,6 +342,16 @@ Open http://localhost:3000 → Connections → Data Sources → Add:
 
 1. **Prometheus** — URL: `http://prometheus-kube-prometheus-prometheus:9090`
 2. **Loki** — URL: `http://loki:3100`
+
+### 2.6 Import dashboards
+
+In Grafana → Dashboards → Import, paste these IDs one at a time:
+
+| Dashboard | Grafana ID |
+|-----------|-----------|
+| Node Exporter Full | `1860` |
+| Kubernetes Cluster Monitoring | `7249` |
+| Kubernetes Pod Overview | `19792` |
 
 ---
 
@@ -390,7 +407,7 @@ kubectl get pods -n app -w
 ## Phase 4 — FastAPI Agent
 
 ### What this phase builds
-- Python FastAPI service with two endpoints: evidence collection and safe remediation
+- Python FastAPI service with endpoints for evidence collection, remediation, and incident logging
 - Containerised and pushed to Amazon ECR
 - Deployed to the `ops` namespace with RBAC least-privilege access
 
@@ -474,20 +491,22 @@ curl -X POST http://localhost:8000/execute \
   -d '{"type": "rollout_restart", "service": "payment-service", "namespace": "app"}'
 ```
 
-### Allow-listed actions (no arbitrary kubectl)
+### Agent endpoints
 
-| Action | Effect |
-|--------|--------|
-| `rollout_restart` | Rolling restart — zero downtime |
-| `rollout_undo` | Rollback to the previous image |
-| `scale` | Scale replicas up or down |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/evidence` | POST | Collect pods, events, logs, restart counts |
+| `/execute` | POST | Execute `rollout_restart`, `rollout_undo`, or `scale` |
+| `/incidents` | POST | Log a resolved incident to PostgreSQL |
+| `/incidents/stats` | GET | Query MTTR statistics per service |
 
 ---
 
 ## Phase 5 — n8n Automation + Telegram ChatOps
 
 ### What this phase builds
-- n8n workflow automation engine deployed on EKS with a public LoadBalancer
+- n8n workflow automation engine deployed on EKS with a persistent EBS volume and public LoadBalancer
 - Alertmanager configured to POST all alerts to n8n
 - 8-node n8n workflow: alert → evidence → AI diagnosis → Telegram → approval → fix → confirm
 - Telegram bot for ChatOps notifications and human-in-the-loop approvals
@@ -515,29 +534,53 @@ kubectl get svc -n n8n -w
 
 Once `EXTERNAL-IP` is assigned, note the URL — this is your n8n endpoint.
 
-### 5.3 Initial n8n setup
+> **Important:** The n8n deployment uses an EBS PersistentVolumeClaim and `fsGroup: 1000`. This ensures workflow data survives pod restarts. Do not replace the PVC with `emptyDir`.
+
+### 5.3 Install EBS CSI driver (EKS 1.29 requirement)
+
+EKS 1.29 removed the in-tree EBS provisioner. You must install the CSI driver:
+
+```bash
+# Get the node role ARN
+NODE_ROLE=$(aws eks describe-nodegroup \
+  --cluster-name kubeguardian \
+  --nodegroup-name default \
+  --query "nodegroup.nodeRole" --output text)
+
+# Attach EBS CSI policy
+aws iam attach-role-policy \
+  --role-name $(basename $NODE_ROLE) \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+# Install the addon
+aws eks create-addon \
+  --cluster-name kubeguardian \
+  --addon-name aws-ebs-csi-driver \
+  --region us-east-1
+```
+
+### 5.4 Initial n8n setup
 
 1. Open `http://<n8n-external-ip>:5678` in your browser
-2. Create an account (n8n 2.x uses email-based auth):
-   - Email: `admin@yourdomain.local`
-   - Password: choose a strong password
+2. Create an account (n8n 2.x uses email-based auth)
 3. Complete the setup wizard
+4. Go to Settings → API → **Create an API key** — save this for Phase 6
 
-### 5.4 Wire Alertmanager to n8n
+### 5.5 Wire Alertmanager to n8n
 
-Update [infra/kubernetes/monitoring/alertmanager-config.yaml](infra/kubernetes/monitoring/alertmanager-config.yaml) — the webhook URL is already set to the in-cluster n8n address:
+[infra/kubernetes/monitoring/alertmanager-config.yaml](infra/kubernetes/monitoring/alertmanager-config.yaml) already points to the in-cluster n8n address:
 
 ```yaml
 url: 'http://n8n.n8n.svc.cluster.local:5678/webhook/kubeguardian-alert'
 ```
 
-Apply the config:
+Apply it:
 
 ```bash
 kubectl apply -f infra/kubernetes/monitoring/alertmanager-config.yaml
 ```
 
-### 5.5 Build the n8n workflow
+### 5.6 Build the n8n workflow
 
 Create a new workflow in the n8n UI with 8 nodes in this order:
 
@@ -552,28 +595,17 @@ Create a new workflow in the n8n UI with 8 nodes in this order:
 - Method: `POST`
 - URL: `http://kubeguardian-agent.ops.svc.cluster.local:8000/evidence`
 - Body Content Type: `JSON`
-- Body:
-```json
-{
-  "service": "payment-service",
-  "namespace": "app"
-}
-```
+- Body: `{"service": "payment-service", "namespace": "app"}`
 
 #### Node 3 — OpenAI (AI diagnosis)
 - Type: **OpenAI**
-- Resource: Chat
+- Resource: Chat / Message a model
 - Model: `gpt-4o`
 - Credential: add your OpenAI API key
 - System prompt:
 ```
 You are a Kubernetes SRE. Analyze the evidence and respond with ONLY valid JSON:
-{
-  "root_cause": "...",
-  "confidence": "high|medium|low",
-  "steps": ["step1", "step2"],
-  "recommended_action": "rollout_restart|rollout_undo|scale"
-}
+{"root_cause":"...","confidence":"high|medium|low","steps":["step1"],"recommended_action":"rollout_restart|rollout_undo|scale","service":"payment-service"}
 ```
 - User message: `={{ JSON.stringify($json) }}`
 
@@ -583,35 +615,26 @@ You are a Kubernetes SRE. Analyze the evidence and respond with ONLY valid JSON:
 ```javascript
 const items = $input.all();
 const results = [];
-
 for (const item of items) {
-  let raw = "";
-  if (item.json.content && item.json.content[0] && item.json.content[0].text) {
-    raw = item.json.content[0].text;
-  } else if (item.json.message && item.json.message.content) {
-    raw = item.json.message.content;
-  } else if (typeof item.json.text === "string") {
-    raw = item.json.text;
-  } else {
-    raw = JSON.stringify(item.json);
-  }
-
-  const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  let diagnosis;
   try {
-    diagnosis = JSON.parse(cleaned);
-  } catch (e) {
-    diagnosis = { root_cause: raw, confidence: "low", steps: [], recommended_action: "rollout_restart" };
+    const j = item.json;
+    let raw =
+      (j?.output?.[0]?.content?.[0]?.text) ||
+      (j?.content?.[0]?.text) ||
+      (j?.choices?.[0]?.message?.content) ||
+      (j?.text) || JSON.stringify(j);
+    const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    let diagnosis;
+    try { diagnosis = JSON.parse(cleaned); }
+    catch (e) { diagnosis = { root_cause: String(raw).slice(0,200), confidence: 'low', steps: [], recommended_action: 'rollout_restart', service: 'payment-service' }; }
+    const sd = $getWorkflowStaticData('global');
+    sd.lastDiagnosis = diagnosis;
+    sd.lastService = diagnosis.service || 'payment-service';
+    results.push({ json: diagnosis });
+  } catch(e) {
+    results.push({ json: { root_cause: e.message, confidence: 'low', steps: [], recommended_action: 'rollout_restart', service: 'payment-service' } });
   }
-
-  // Persist for use after the Wait node
-  const staticData = $getWorkflowStaticData("global");
-  staticData.lastDiagnosis = diagnosis;
-  staticData.lastService = "payment-service";
-
-  results.push({ json: diagnosis });
 }
-
 return results;
 ```
 
@@ -619,63 +642,53 @@ return results;
 - Type: **Telegram**
 - Credential: add your bot token
 - Chat ID: your Telegram chat ID
+- Parse Mode: Markdown
 - Text:
 ```
-🚨 KubeGuardian Alert
+🚨 *KubeGuardian Alert*
 
-Service: payment-service
-Root Cause: {{ $json.root_cause }}
-Confidence: {{ $json.confidence }}
+*Service:* {{ $json.service || 'payment-service' }}
+*Root Cause:* {{ $json.root_cause }}
+*Confidence:* {{ $json.confidence }}
 
-Steps:
-{{ $json.steps.join('\n') }}
+*Recommended Fix:* `{{ $json.recommended_action }}`
 
-Recommended Fix: {{ $json.recommended_action }}
-
-To approve: click the link below
-{{ $execution.resumeUrl }}
+✅ [Click to Approve Fix]({{ $execution.resumeUrl }})
 ```
 
 #### Node 6 — Wait
 - Type: **Wait**
 - Resume: `On webhook call`
-- This node pauses the workflow until you click the `resumeUrl` from Telegram
 
 #### Node 7 — HTTP Request (execute fix)
 - Type: **HTTP Request**
 - Method: `POST`
 - URL: `http://kubeguardian-agent.ops.svc.cluster.local:8000/execute`
-- Body Content Type: `JSON`
 - Body:
-```javascript
-// In "Using Fields Below" mode:
-// type  = {{ $getWorkflowStaticData('global').lastDiagnosis.recommended_action }}
-// service = {{ $getWorkflowStaticData('global').lastService }}
-// namespace = app
-```
+  - `type` = `={{ $getWorkflowStaticData('global').lastDiagnosis.recommended_action }}`
+  - `service` = `={{ $getWorkflowStaticData('global').lastService }}`
+  - `namespace` = `app`
 
 #### Node 8 — Telegram (confirm fix)
 - Type: **Telegram**
-- Credential: same bot
-- Chat ID: same chat ID
 - Text:
 ```
-✅ Fix Applied
+✅ *Fix Applied*
 
-Service: {{ $getWorkflowStaticData('global').lastService }}
-Action: {{ $getWorkflowStaticData('global').lastDiagnosis.recommended_action }}
-Status: Remediation complete
+*Service:* {{ $getWorkflowStaticData('global').lastService }}
+*Action:* `{{ $getWorkflowStaticData('global').lastDiagnosis.recommended_action }}`
+*Status:* Remediation complete
 ```
 
-**Activate the workflow** by toggling the switch in the top right corner from Inactive → Active.
+**Save and Publish** the workflow (toggle Inactive → Active in the top-right corner).
 
 ---
 
 ## Phase 6 — MCP Server (Claude Desktop)
 
 ### What this phase builds
-- Node.js MCP (Model Context Protocol) server that exposes 14 Kubernetes tools to Claude Desktop
-- Claude can query your cluster, collect evidence, trigger incidents, and call n8n directly from chat
+- Node.js MCP (Model Context Protocol) server exposing 15 Kubernetes tools to Claude Desktop
+- Claude can query your cluster, collect evidence, trigger incidents, log incidents, and view MTTR stats — in plain English
 
 ### 6.1 Install MCP server dependencies
 
@@ -685,13 +698,7 @@ npm install
 cd ..
 ```
 
-### 6.2 Get your n8n API key
-
-1. Open n8n → top-right menu → **Settings** → **API**
-2. Click **Create an API key**
-3. Copy the key
-
-### 6.3 Configure Claude Desktop
+### 6.2 Configure Claude Desktop
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) and add:
 
@@ -711,11 +718,14 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) a
 }
 ```
 
-> **Note:** `AGENT_URL` uses `localhost:8000` because the agent is inside the cluster. Run `kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops` whenever you want to use MCP tools that call the agent.
+> **Note:** `AGENT_URL` uses `localhost:8000` because the agent lives inside the cluster. Keep a port-forward running whenever you use MCP tools that call the agent:
+> ```bash
+> kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops
+> ```
 
-### 6.4 Restart Claude Desktop
+### 6.3 Restart Claude Desktop
 
-Quit and reopen Claude Desktop. You should see a tools icon (hammer) in the chat bar — this confirms the MCP server connected.
+Quit and reopen Claude Desktop. A hammer icon in the chat input bar confirms the MCP server connected successfully.
 
 ### Available MCP tools
 
@@ -726,14 +736,16 @@ Quit and reopen Claude Desktop. You should see a tools icon (hammer) in the chat
 | `get_events` | Get recent Kubernetes events |
 | `describe_deployment` | Full deployment state and conditions |
 | `collect_evidence` | Full incident evidence bundle for a service |
-| `rollout_restart` | Rolling restart (zero downtime) |
+| `rollout_restart` | Rolling restart — zero downtime |
 | `rollout_undo` | Rollback to previous image |
-| `scale_deployment` | Scale replicas |
+| `scale_deployment` | Scale replicas up or down |
 | `cluster_health` | Overall cluster health summary |
-| `trigger_incident` | Simulate a crashloop / readiness / errorrate incident |
+| `trigger_incident` | Simulate crashloop / readiness / errorrate |
 | `restore_service` | Restore a service after a simulated incident |
 | `trigger_n8n_alert` | Manually fire the n8n alert pipeline |
 | `list_n8n_executions` | List recent n8n workflow runs |
+| `log_incident` | Log a resolved incident to PostgreSQL with MTTR |
+| `get_incident_stats` | Query MTTR statistics per service from the database |
 
 ---
 
@@ -742,7 +754,7 @@ Quit and reopen Claude Desktop. You should see a tools icon (hammer) in the chat
 ### What this phase builds
 - Argo CD installed on EKS — watches your GitHub repo
 - Any `git push` to `infra/kubernetes/` automatically syncs to the cluster
-- Auto-heal: manual `kubectl` changes are reverted back to the git state
+- Auto-heal: manual `kubectl` changes are reverted to the committed state
 
 ### 7.1 Install Argo CD
 
@@ -773,7 +785,7 @@ kubectl get secret argocd-initial-admin-secret -n argocd \
   -o jsonpath="{.data.password}" | base64 -d && echo
 ```
 
-> **Save this password.** You can change it in the Argo CD UI under User Info → Update Password.
+> Save this password. You can change it in the Argo CD UI under User Info → Update Password.
 
 ### 7.4 Log in to Argo CD
 
@@ -782,7 +794,7 @@ Open `http://<argocd-external-ip>` in your browser.
 - Username: `admin`
 - Password: the value from step 7.3
 
-> Chrome will show an SSL warning (self-signed cert). Click **Advanced → Proceed** — this is expected for a self-hosted setup.
+> Chrome will show an SSL warning (self-signed cert). Click **Advanced → Proceed** — expected for a self-hosted setup.
 
 ### 7.5 Create the Application
 
@@ -814,7 +826,131 @@ Expected: `SYNC STATUS: Synced` and `HEALTH STATUS: Healthy`
 2. git add . && git commit -m "your change" && git push
 3. Argo CD detects the change within ~3 minutes
 4. Argo CD runs kubectl apply to reconcile the cluster
-5. If someone manually edits the cluster (kubectl patch), Argo CD reverts it
+5. If someone manually edits the cluster, Argo CD reverts it automatically
+```
+
+---
+
+## Phase 8 — Incident Database + MTTR Tracking (V2)
+
+### What this phase builds
+- PostgreSQL 15 deployed in the `ops` namespace with an EBS-backed PersistentVolumeClaim
+- `incidents` table with `mttr_seconds` automatically calculated as a generated column
+- FastAPI agent endpoints: `POST /incidents` and `GET /incidents/stats`
+- Two new MCP tools: `log_incident` and `get_incident_stats`
+- Every resolved incident is recorded — service, type, root cause, action taken, outcome, and MTTR
+
+### 8.1 Deploy PostgreSQL
+
+```bash
+kubectl apply -f infra/kubernetes/postgres/deployment.yaml
+
+# Watch the pod come up (takes ~30 seconds)
+kubectl get pods -n ops -w
+```
+
+### 8.2 Create the incidents table
+
+```bash
+kubectl exec -n ops deployment/postgres -- psql -U kubeguardian -d kubeguardian -c "
+CREATE TABLE IF NOT EXISTS incidents (
+  id               SERIAL PRIMARY KEY,
+  service          TEXT NOT NULL,
+  namespace        TEXT NOT NULL DEFAULT 'app',
+  incident_type    TEXT NOT NULL,
+  root_cause       TEXT,
+  confidence       TEXT,
+  recommended_action TEXT,
+  action_taken     TEXT NOT NULL,
+  outcome          TEXT NOT NULL DEFAULT 'success',
+  detected_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at      TIMESTAMPTZ,
+  mttr_seconds     INTEGER GENERATED ALWAYS AS (
+    EXTRACT(EPOCH FROM (resolved_at - detected_at))::INTEGER
+  ) STORED
+);
+"
+```
+
+### 8.3 Verify the agent can reach PostgreSQL
+
+```bash
+# Port-forward to the agent
+kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops
+
+# Log a test incident
+curl -X POST http://localhost:8000/incidents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "service": "payment-service",
+    "incident_type": "crashloop",
+    "root_cause": "OOMKilled — memory limit too low",
+    "confidence": "high",
+    "recommended_action": "rollout_undo",
+    "action_taken": "rollout_undo",
+    "outcome": "success"
+  }'
+
+# Query stats
+curl http://localhost:8000/incidents/stats
+```
+
+### 8.4 Use the MCP tools from Claude Desktop
+
+After restarting Claude Desktop with the updated config:
+
+- **Log an incident:** *"Log a crashloop incident for payment-service — root cause was OOMKilled, action taken was rollout_undo, outcome success"*
+- **Query MTTR:** *"Show me incident stats for payment-service"*
+- **All services:** *"What are the MTTR stats across all services?"*
+
+---
+
+## Claude Desktop — Example Queries
+
+With the port-forward running (`kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops`) and Claude Desktop restarted, you can use plain English to control and inspect your cluster.
+
+### Cluster inspection
+
+```
+"Check cluster health"
+"Show me all pods in the app namespace"
+"Get the logs for the payment-service pod"
+"Describe the payment-service deployment"
+"Show me recent events in the app namespace"
+```
+
+### Incident simulation and response
+
+```
+"Trigger a crashloop on payment-service"
+"Simulate a readiness failure on user-service"
+"Collect evidence for payment-service — what's wrong?"
+"Restart payment-service with a rolling restart"
+"Roll back payment-service to the previous image"
+"Restore payment-service to healthy"
+```
+
+### Incident history and MTTR
+
+```
+"Show me incident stats for payment-service"
+"What is the average MTTR across all services?"
+"Log a resolved incident — service: payment-service, type: crashloop, root cause: OOMKilled, action taken: rollout_undo, outcome: success"
+"How many crashloop incidents has payment-service had?"
+```
+
+### n8n pipeline
+
+```
+"Trigger an n8n alert for payment-service"
+"List the last 5 n8n workflow executions"
+```
+
+### Scale and capacity
+
+```
+"Scale payment-service to 3 replicas"
+"Scale api-gateway to 1 replica"
 ```
 
 ---
@@ -824,7 +960,7 @@ Expected: `SYNC STATUS: Synced` and `HEALTH STATUS: Healthy`
 Once all phases are complete, run a full incident simulation:
 
 ```bash
-# 1. Port-forward the agent (required for MCP tools)
+# 1. Ensure the agent port-forward is running
 kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops &
 
 # 2. Trigger a CrashLoopBackOff on payment-service
@@ -843,9 +979,14 @@ Within ~1 minute:
 
 Click the approval link in Telegram:
 - n8n resumes execution
-- Calls `/execute` with `rollout_undo`
-- `kubectl rollout undo` restores the previous healthy image
+- Calls `/execute` with the recommended action
 - **Telegram confirms**: "Fix applied — payment-service restored"
+
+Then from Claude Desktop:
+```
+"Log this incident — payment-service, crashloop, root cause: bad command override, action: rollout_undo, outcome: success"
+"Show me incident stats for payment-service"
+```
 
 ---
 
@@ -854,7 +995,7 @@ Click the approval link in Telegram:
 ```
 kubeguardian/
 ├── agent/
-│   ├── api.py                      # FastAPI app — /health, /evidence, /execute
+│   ├── api.py                      # FastAPI — /health /evidence /execute /incidents /incidents/stats
 │   ├── Dockerfile                  # python:3.11-slim + kubectl binary
 │   ├── requirements.txt
 │   └── collector/
@@ -876,9 +1017,11 @@ kubeguardian/
 │   │   │   ├── alert-rules.yaml    # 3 PrometheusRule alerts
 │   │   │   └── alertmanager-config.yaml  # Route all alerts → n8n webhook
 │   │   ├── n8n/
-│   │   │   └── deployment.yaml     # n8n + Classic ELB LoadBalancer Service
+│   │   │   └── deployment.yaml     # n8n + EBS PVC + Classic ELB LoadBalancer
 │   │   ├── namespaces/
 │   │   │   └── namespaces.yaml     # app, monitoring, ops namespaces
+│   │   ├── postgres/
+│   │   │   └── deployment.yaml     # PostgreSQL 15 + EBS PVC + Secret
 │   │   └── services/
 │   │       ├── api-gateway.yaml
 │   │       ├── payment-service.yaml
@@ -889,7 +1032,7 @@ kubeguardian/
 │       ├── outputs.tf              # Cluster name, endpoint, region
 │       └── versions.tf             # Provider version pins
 ├── mcp-server/
-│   ├── index.js                    # MCP server — 14 cluster + n8n tools
+│   ├── index.js                    # MCP server — 15 cluster + n8n + incident tools
 │   └── package.json
 └── scripts/
     └── simulate.sh                 # Incident simulator and restore utility
@@ -919,13 +1062,18 @@ kubectl get pods -n argocd
 kubectl port-forward svc/grafana 3000:80 -n monitoring
 kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090 -n monitoring
 kubectl port-forward svc/prometheus-kube-prometheus-alertmanager 9093:9093 -n monitoring
-kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops
+kubectl port-forward svc/kubeguardian-agent 8000:8000 -n ops     # required for MCP tools
 
 # ── Agent API (while port-forwarded) ───────────────────────────────────────
 curl http://localhost:8000/health
 curl -X POST http://localhost:8000/evidence \
   -H "Content-Type: application/json" \
   -d '{"service": "payment-service", "namespace": "app"}'
+curl http://localhost:8000/incidents/stats
+
+# ── Incident database ──────────────────────────────────────────────────────
+kubectl exec -n ops deployment/postgres -- \
+  psql -U kubeguardian -d kubeguardian -c "SELECT * FROM incidents ORDER BY detected_at DESC LIMIT 10;"
 
 # ── Argo CD ────────────────────────────────────────────────────────────────
 kubectl get application kubeguardian -n argocd
@@ -952,10 +1100,11 @@ terraform destroy
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| Phase 1 | EKS cluster + VPC + microservices | ✅ Complete |
-| Phase 2 | Prometheus + Grafana + Loki + Alertmanager | ✅ Complete |
-| Phase 3 | Alert rules + incident simulator | ✅ Complete |
-| Phase 4 | FastAPI agent — evidence collector + executor | ✅ Complete |
-| Phase 5 | n8n automation + Telegram ChatOps | ✅ Complete |
-| Phase 6 | MCP server — Claude Desktop integration | ✅ Complete |
-| Phase 7 | Argo CD GitOps — automated sync from GitHub | ✅ Complete |
+| Phase 1 | EKS cluster + VPC + microservices | Complete |
+| Phase 2 | Prometheus + Grafana + Loki + Alertmanager | Complete |
+| Phase 3 | Alert rules + incident simulator | Complete |
+| Phase 4 | FastAPI agent — evidence collector + executor | Complete |
+| Phase 5 | n8n automation + Telegram ChatOps | Complete |
+| Phase 6 | MCP server — Claude Desktop integration (15 tools) | Complete |
+| Phase 7 | Argo CD GitOps — automated sync from GitHub | Complete |
+| Phase 8 | PostgreSQL incident store + MTTR tracking (V2) | Complete |
