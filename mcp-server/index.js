@@ -176,6 +176,33 @@ const TOOLS = [
         limit: { type: "number", description: "Number of executions to return (default: 5)" }
       }
     }
+  },
+  {
+    name: "log_incident",
+    description: "Log a resolved incident to the PostgreSQL incident database",
+    inputSchema: {
+      type: "object",
+      required: ["service", "incident_type", "action_taken"],
+      properties: {
+        service:            { type: "string", description: "Service name (e.g. payment-service)" },
+        incident_type:      { type: "string", description: "crashloop | readiness | errorrate" },
+        root_cause:         { type: "string", description: "Root cause description from AI diagnosis" },
+        confidence:         { type: "string", description: "high | medium | low" },
+        recommended_action: { type: "string", description: "What the AI recommended" },
+        action_taken:       { type: "string", description: "rollout_restart | rollout_undo | scale" },
+        outcome:            { type: "string", description: "success | failure (default: success)" }
+      }
+    }
+  },
+  {
+    name: "get_incident_stats",
+    description: "Query incident history and MTTR stats from the database",
+    inputSchema: {
+      type: "object",
+      properties: {
+        service: { type: "string", description: "Filter by service name (optional — omit for all services)" }
+      }
+    }
   }
 ];
 
@@ -266,6 +293,29 @@ async function handleTool(name, args) {
       const headers = N8N_API_KEY ? { "X-N8N-API-KEY": N8N_API_KEY } : {};
       const res = await axios.get(`${N8N_URL}/api/v1/executions?limit=${limit}`, { headers });
       return JSON.stringify(res.data, null, 2);
+    }
+
+    case "log_incident": {
+      const res = await axios.post(`${AGENT_URL}/incidents`, {
+        service:            args.service,
+        incident_type:      args.incident_type,
+        root_cause:         args.root_cause || "",
+        confidence:         args.confidence || "low",
+        recommended_action: args.recommended_action || "",
+        action_taken:       args.action_taken,
+        outcome:            args.outcome || "success"
+      });
+      return JSON.stringify(res.data, null, 2);
+    }
+
+    case "get_incident_stats": {
+      const params = args.service ? `?service=${encodeURIComponent(args.service)}` : "";
+      const res = await axios.get(`${AGENT_URL}/incidents/stats${params}`);
+      const stats = res.data.stats;
+      if (!stats.length) return "No incidents recorded yet.";
+      return stats.map(s =>
+        `${s.service} | ${s.incident_type} | total=${s.total} resolved=${s.resolved} | avg_mttr=${s.avg_mttr_min}min min=${s.min_mttr_min}min max=${s.max_mttr_min}min`
+      ).join("\n");
     }
 
     case "cluster_health": {
