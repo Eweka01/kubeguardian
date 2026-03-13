@@ -3,6 +3,18 @@ kind: Namespace
 metadata:
   name: n8n
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: n8n-pvc
+  namespace: n8n
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,6 +30,10 @@ spec:
       labels:
         app: n8n
     spec:
+      nodeSelector:
+        topology.kubernetes.io/zone: us-east-1b
+      securityContext:
+        fsGroup: 1000
       containers:
       - name: n8n
         image: n8nio/n8n:latest
@@ -45,7 +61,8 @@ spec:
           mountPath: /home/node/.n8n
       volumes:
       - name: n8n-data
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: n8n-pvc
 ---
 apiVersion: v1
 kind: Service
