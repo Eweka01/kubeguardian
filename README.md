@@ -3,7 +3,7 @@
 > AI-assisted Kubernetes incident triage and automated remediation platform. Detects real incidents on EKS, collects evidence, runs AI diagnosis, executes safe fixes, logs every incident to a database, and tracks MTTR — all queryable from Claude Desktop via natural language.
 
 ---
-Screen Recording 2026-03-13 at 12.51.06 AM.mov
+https://github.com/user-attachments/assets/8d10facb-df0a-4c5c-9413-f01ec1c0cf9d
 
 ## Table of Contents
 
