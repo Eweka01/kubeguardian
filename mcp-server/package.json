@@ -1,0 +1,17 @@
+{
+  "name": "mcp-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "axios": "^1.13.6"
+  }
+}
